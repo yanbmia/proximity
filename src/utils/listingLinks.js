@@ -2,96 +2,207 @@
 // LISTING DEEP LINKS
 //
 // Builds "show me apartments here" search URLs for a neighborhood, from data
-// the map already has (zip, boro) plus the current budget slider value.
+// the map already has (name, zip, boro) plus the current budget slider value.
 //
-// WHY ZIP AND BOROUGH, AND NOT NEIGHBOURHOOD NAME:
+// WHY NAME-MATCHING AGAINST A SEPARATE STREETEASY NAME LIST, RATHER THAN
+// SLUGGING THE NTA NAME DIRECTLY:
 // The names in neighborhoods.geojson are 2020 NTA labels, and most of them
 // have no counterpart in any listing site's neighborhood taxonomy -- 93 of
 // the 197 are compound ("Carroll Gardens-Cobble Hill-Gowanus-Red Hook") and
-// 32 are parenthetical ("Bushwick (West)"). Slugging those would produce
-// mostly-broken links. Every feature does carry a valid 5-digit `zip` and a
-// borough, so those are what these builders key on.
+// 32 are parenthetical ("Bushwick (West)"). Slugging an NTA name directly
+// would produce mostly-broken links.
 //
-// A ZIP is an approximation of an NTA polygon, not the same shape. The UI
-// says so rather than implying the results are exactly this neighborhood.
+// Instead this matches fragments of the NTA name against
+// streetEasyNeighborhoods.js, a transcription of StreetEasy's own
+// neighborhood picker, and links to whichever of its real neighborhoods it
+// can find inside the NTA name ("Carroll Gardens-Cobble Hill-Gowanus-Red
+// Hook" -> four separate links, one per real neighborhood). Every NTA
+// feature does carry a valid 5-digit `zip` and a borough too, so an NTA name
+// with no recognizable match, and Zillow's ZIP-scoped link, fall back to
+// those instead.
+//
+// A borough or ZIP link is an approximation of an NTA polygon, not the same
+// shape. The UI says so rather than implying the results are exactly this
+// neighborhood.
 //
 // ---------------------------------------------------------------------------
 // VERIFICATION LOG -- these sites change their URL formats and will silently
 // IGNORE a filter they no longer understand, which is worse than no filter at
 // all (the user thinks they're seeing capped prices and they are not). So
 // each format is either CONFIRMED by loading it and checking the filter
-// actually took effect, or marked ASSUMED. Checked 2026-09-20.
+// actually took effect, or marked ASSUMED.
 //
-//   CONFIRMED  streeteasy.com/for-rent/brooklyn/price:-3300%7Cbeds%3C1
-//              -> "Brooklyn NY Apartments for Rent under $3,300". Confirms
-//                 the /for-rent/<borough-slug>/ shape, the price cap, the
-//                 pipe-delimited filter segment, and the `<` operator.
-//   CONFIRMED  streeteasy.com/for-rent/nyc/price:-3300%7Cbeds:1%7Carea:301
-//              -> "Greenpoint, Brooklyn NY Apartments for Rent under $3,300".
-//                 Confirms `beds:N` and that neighborhood scoping needs an
-//                 internal numeric area id (which is why we use boroughs).
+//   CONFIRMED  streeteasy.com/for-rent/west-chelsea/price:-4500|beds%3C=1?sort_by=se_score
+//              (checked 2026-09-21) -- confirms the /for-rent/<slug>/ shape
+//              scopes to an actual StreetEasy neighborhood (not just a
+//              borough), that the price and beds filters share one
+//              pipe-delimited path segment with a literal, NOT
+//              percent-encoded, `|`, that `beds%3C=1` (bed count <= 1, i.e.
+//              studio or 1-bedroom) is the working beds filter, and that
+//              `?sort_by=se_score` is appended as an ordinary query param
+//              after the filter segment.
+//
+//              This supersedes an earlier check (2026-09-20) that had found
+//              `beds%3C2` with both `%3C` and `|` percent-encoded
+//              (`%7C`) -- that shape is no longer used below. `%3C` for `<`
+//              is kept (it lands inside an href attribute value; see below).
+//
+//   CONFIRMED  "Lower East Side" -> "les" (checked 2026-09-21) -- StreetEasy
+//              abbreviates this one rather than using the lowercase-dashed
+//              form; see SLUG_OVERRIDES in streetEasyNeighborhoods.js.
+//
+//   ASSUMED    Every StreetEasy slug below other than "west-chelsea" and
+//              "les" --
+//              i.e. every other neighborhood slug in
+//              streetEasyNeighborhoods.js, and the five borough-level slugs
+//              (manhattan, brooklyn, queens, bronx, staten-island) used as
+//              the fallback when no neighborhood match is found. These
+//              follow the same `/for-rent/<slug>/...` shape as the
+//              confirmed link and are derived the same simple way
+//              (lowercase, spaces/slashes to dashes) from names either
+//              StreetEasy's own picker shows (neighborhoods) or that were
+//              previously checked against the live site (boroughs -- see
+//              git history for that earlier check). "Low risk a slug is
+//              wrong" is not the same as "checked": if a link 404s or
+//              silently drops a filter, it's a one-line fix in
+//              streetEasyNeighborhoods.js or STREETEASY_BOROUGH_SLUGS below.
+//
 //   CONFIRMED  zillow.com/new-york-ny-11222/rentals/
 //              -> "Rental Listings in 11222". ZIP scoping works.
 //   REJECTED   zillow.com/new-york-ny-11222/rentals/0-1_beds/-3300_price/
 //              -> returned UNFILTERED results ($3,931+ and $4,511+ listings
 //                 against a $3,300 cap). Zillow accepted the URL and dropped
 //                 both filters silently. Do not reintroduce this path syntax.
-//
-//   ASSUMED    The four non-Brooklyn borough slugs below, and `beds<2`
-//              specifically (rather than the `beds<1` that was confirmed).
-//              StreetEasy started returning "Access denied" to the automated
-//              browser partway through checking, so these could not be
-//              loaded. The risk is low -- they only vary from a confirmed
-//              URL by a borough name or a single digit -- but "low" is not
-//              "checked". To confirm: open each of these in a normal browser
-//              and look for "<Borough> NY Apartments for Rent under $3,300"
-//              in the page title. A wrong slug 404s, it does not fail quietly.
-//
-//                https://streeteasy.com/for-rent/manhattan/price:-3300%7Cbeds%3C2
-//                https://streeteasy.com/for-rent/queens/price:-3300%7Cbeds%3C2
-//                https://streeteasy.com/for-rent/bronx/price:-3300%7Cbeds%3C2
-//                https://streeteasy.com/for-rent/staten-island/price:-3300%7Cbeds%3C2
-//
-//              If one is wrong it is a one-word fix in the slug map below
-//              (the likely alternates are "the-bronx" and "statenisland").
 // ---------------------------------------------------------------------------
 
-// StreetEasy scopes by borough here rather than by neighborhood: its
-// neighborhood filter takes an internal numeric area id (area:301 = Greenpoint),
-// and there is no published mapping from NTA polygons to those ids.
+import { STREETEASY_NEIGHBORHOODS_BY_BORO } from "../data/streetEasyNeighborhoods.js";
+
+// StreetEasy takes a borough itself as a `/for-rent/<slug>/` area, same as a
+// neighborhood -- used when no part of the NTA name matches a known
+// StreetEasy neighborhood.
 const STREETEASY_BOROUGH_SLUGS = {
-  Manhattan: "manhattan", // assumed -- see log
-  Brooklyn: "brooklyn", // confirmed against the live site
-  Queens: "queens", // assumed -- see log
-  Bronx: "bronx", // assumed -- see log (alternate: "the-bronx")
-  "Staten Island": "staten-island", // assumed -- see log (alternate: "statenisland")
+  Manhattan: "manhattan",
+  Brooklyn: "brooklyn",
+  Queens: "queens",
+  Bronx: "bronx",
+  "Staten Island": "staten-island",
 };
 
-// Studio + 1 bedroom. StreetEasy's `<` operator is exclusive, so "fewer than
-// 2 bedrooms" is studios and 1-bedrooms.
-const STREETEASY_MAX_BEDS_EXCLUSIVE = 2;
+// Studio + 1 bedroom, StreetEasy's inclusive `<=` beds filter (see log).
+const STREETEASY_BEDS_FILTER = "beds%3C=1";
+
+function normalizeForMatch(raw) {
+  return raw
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\bst\.?\s+/gi, "saint ")
+    .replace(/\bmt\.?\s+/gi, "mount ")
+    .toLowerCase()
+    .replace(/[.']/g, "")
+    .replace(/[\s/-]+/g, " ")
+    .trim();
+}
+
+// Builds, once per borough, the list of StreetEasy neighborhood entries with
+// their match tokens attached, longest-name-first so a compound neighborhood
+// ("Carroll Gardens", "Bedford-Stuyvesant") is matched whole before its
+// individual words could be tried against anything else.
+const MATCH_CANDIDATES_BY_BORO = Object.fromEntries(
+  Object.entries(STREETEASY_NEIGHBORHOODS_BY_BORO).map(([boro, entries]) => [
+    boro,
+    entries
+      .map((e) => ({ ...e, tokens: normalizeForMatch(e.name).split(" ").filter(Boolean) }))
+      .sort((a, b) => b.tokens.length - a.tokens.length),
+  ])
+);
 
 /**
- * Borough-scoped StreetEasy rental search, with the price cap and
- * studio/1-bedroom filter applied.
+ * Finds every StreetEasy neighborhood whose name appears as a whole,
+ * non-overlapping word sequence inside an NTA name, e.g.
+ * "Carroll Gardens-Cobble Hill-Gowanus-Red Hook" (Brooklyn) matches Carroll
+ * Gardens, Cobble Hill, Gowanus, and Red Hook individually. A recognized but
+ * unslugged (ambiguous, see streetEasyNeighborhoods.js) match still consumes
+ * its words -- it just isn't returned -- so it can't also be picked up as
+ * some other, shorter candidate.
  *
- * @param {string} boro      borough name as it appears in the geojson
- * @param {number|null} maxRent  price cap, or null to omit the filter entirely
- * @returns {string|null} url, or null if the borough isn't recognised
+ * @param {string} ntaName
+ * @param {string} boro
+ * @returns {{name: string, slug: string}[]}
  */
-export function buildStreetEasyUrl(boro, maxRent) {
-  const slug = STREETEASY_BOROUGH_SLUGS[boro];
-  if (!slug) return null;
+export function matchStreetEasyNeighborhoods(ntaName, boro) {
+  const candidates = MATCH_CANDIDATES_BY_BORO[boro];
+  if (!ntaName || !candidates) return [];
 
-  // StreetEasy takes filters as a pipe-delimited path segment. Both the `<`
-  // and the `|` are percent-encoded here (%3C, %7C) so the URL matches the
-  // form that was actually verified against the live site, and so the href
-  // survives being escaped into the popup's innerHTML without a raw `<`
-  // landing in an attribute value.
-  const filters = [`beds%3C${STREETEASY_MAX_BEDS_EXCLUSIVE}`];
-  if (maxRent) filters.unshift(`price:-${maxRent}`);
+  const ntaTokens = normalizeForMatch(ntaName).split(" ").filter(Boolean);
+  const used = new Array(ntaTokens.length).fill(false);
+  const found = []; // { index, name, slug }
 
-  return `https://streeteasy.com/for-rent/${slug}/${filters.join("%7C")}`;
+  for (const candidate of candidates) {
+    const n = candidate.tokens.length;
+    if (n === 0) continue;
+    for (let i = 0; i + n <= ntaTokens.length; i++) {
+      if (used.slice(i, i + n).some(Boolean)) continue;
+      let matches = true;
+      for (let j = 0; j < n; j++) {
+        if (ntaTokens[i + j] !== candidate.tokens[j]) {
+          matches = false;
+          break;
+        }
+      }
+      if (matches) {
+        for (let j = 0; j < n; j++) used[i + j] = true;
+        if (candidate.slug) {
+          found.push({ index: i, name: candidate.name, slug: candidate.slug });
+        }
+        break; // a given candidate name won't recur inside one NTA name
+      }
+    }
+  }
+
+  // Left-to-right order, matching how the NTA name itself reads.
+  return found.sort((a, b) => a.index - b.index).map(({ name, slug }) => ({ name, slug }));
+}
+
+function buildFilterSegment(maxRent) {
+  const priceSegment = maxRent ? `price:-${maxRent}|` : "";
+  return `${priceSegment}${STREETEASY_BEDS_FILTER}`;
+}
+
+/**
+ * StreetEasy rental search URL(s) for an NTA feature: one per real
+ * StreetEasy neighborhood recognized inside its name, or a single
+ * borough-scoped link if none was recognized.
+ *
+ * @param {object} props     a neighborhood feature's properties (name, boro)
+ * @param {number|null} maxRent  price cap, or null to omit the filter entirely
+ * @returns {{id: string, label: string, href: string, scope: string}[]}
+ */
+export function buildStreetEasyLinks(props, maxRent) {
+  const { name, boro } = props || {};
+  if (!boro) return [];
+
+  const filters = buildFilterSegment(maxRent);
+  const scopeSuffix = maxRent ? `under $${maxRent} · studio–1BR` : "studio–1BR";
+
+  const matches = matchStreetEasyNeighborhoods(name, boro);
+  if (matches.length > 0) {
+    return matches.map(({ name: matchedName, slug }) => ({
+      id: `streeteasy-${slug}`,
+      label: "StreetEasy",
+      href: `https://streeteasy.com/for-rent/${slug}/${filters}?sort_by=se_score`,
+      scope: `${matchedName} · ${scopeSuffix}`,
+    }));
+  }
+
+  const boroughSlug = STREETEASY_BOROUGH_SLUGS[boro];
+  if (!boroughSlug) return [];
+  return [
+    {
+      id: `streeteasy-${boroughSlug}`,
+      label: "StreetEasy",
+      href: `https://streeteasy.com/for-rent/${boroughSlug}/${filters}?sort_by=se_score`,
+      scope: `${boro} · ${scopeSuffix}`,
+    },
+  ];
 }
 
 /**
@@ -124,19 +235,8 @@ export function buildZillowUrl(zip) {
  *                               inventing one from the slider's idle value
  */
 export function buildListingLinks(props, maxRent) {
-  const { zip, boro } = props || {};
-  const links = [];
-
-  const streetEasy = buildStreetEasyUrl(boro, maxRent);
-  if (streetEasy) {
-    links.push({
-      id: "streeteasy",
-      label: "StreetEasy",
-      href: streetEasy,
-      // Deliberately explicit: this is borough-wide, not this polygon.
-      scope: maxRent ? `${boro} · under $${maxRent} · studio–1BR` : `${boro} · studio–1BR`,
-    });
-  }
+  const { zip } = props || {};
+  const links = [...buildStreetEasyLinks(props, maxRent)];
 
   const zillow = buildZillowUrl(zip);
   if (zillow) {

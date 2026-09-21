@@ -633,9 +633,7 @@ const Home = () => {
                         font-size:10px; font-weight:500; letter-spacing:0.08em;
                         text-transform:uppercase; margin-bottom:7px;">Find apartments</p>
               ${linkRows}
-              <p style="color:#6a5c7d; font-size:10px; font-weight:300; line-height:1.45; margin-top:7px;">
-                Searches cover this ZIP and borough, which only approximate the
-                neighborhood outline.</p>
+
             </div>`
           )
           .addTo(map.current);
@@ -1217,8 +1215,9 @@ const Home = () => {
                   ))}
                 </div>
                 <p className="text-paper-lav text-[10px] font-light leading-snug mt-2">
-                  Searches cover this ZIP and borough, which only approximate
-                  the neighborhood outline.
+                  Each result covers the area named next to it (a
+                  neighborhood, borough, or ZIP), which only approximates
+                  this outline.
                 </p>
               </div>
             )}
