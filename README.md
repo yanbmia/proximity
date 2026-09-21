@@ -1,27 +1,13 @@
 # [Proximity](https://yanbmia.github.io/proximity/)
 
-Designed to help people find the perfect neighborhood in New York
-City, built around proximity to universities (NYU and Columbia),
-alongside safety, parks, grocery chains, subway access, rent, and bikeshare
-coverage.
+Designed to help people find the perfect neighborhood in New York.
 
-![Proximity screenshot](proximity-image-display.png)
-
-## Table of Contents
-
-- [General Info](#general-information)
-- [Technologies Used](#technologies-used)
-- [Features](#features)
-- [Data Sources](#data-sources)
-- [Scoring Methodology](#scoring-methodology)
-- [Environment Setup](#environment-setup)
-
-## General Information
-
-Proximity shades a map of NYC's neighborhoods (2020 Neighborhood Tabulation
-Areas) based on how well each one matches the filters you select. Darker
+Proximity shades a map of NYC's neighborhoods based on how well each one matches the filters you select. Darker
 shading means a stronger match. Filters stack, so the more you add, the more
 each neighborhood's shading reflects your combined preferences.
+
+![Proximity screenshot](proximity-image.png)
+
 
 ## Technologies Used
 
