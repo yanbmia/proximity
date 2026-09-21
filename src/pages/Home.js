@@ -7,9 +7,9 @@ import { FiShoppingCart } from "react-icons/fi";
 import { PiPersonSimpleBikeBold } from "react-icons/pi";
 import { FaUniversity } from "react-icons/fa";
 import { BiMoneyWithdraw } from "react-icons/bi";
-import { BsCheckCircleFill } from "react-icons/bs";
 import nyuPin from "../styles/icons/nyu.jpg";
 import columbiaPin from "../styles/icons/columbia.jpeg";
+import { buildListingLinks } from "../utils/listingLinks";
 
 // Campus coordinates used for both the map pins below and the
 // distance_from_nyu / distance_from_columbia values baked into
@@ -68,6 +68,25 @@ const estimateETA = (distanceMeters) => {
   return Math.max(1, Math.round(minutes));
 };
 
+// Neighborhood names come from our own geojson rather than user input, but
+// these strings are injected as HTML into the popups below, so escape them
+// anyway instead of relying on the data staying trusted.
+const escapeHtml = (value) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+
+// Matches Tailwind's `sm` breakpoint. Below it the pinned popup is too
+// cramped to be useful, so the sidebar panel carries the listing links
+// instead (see the detail panel in the sidebar).
+const isDesktopWidth = () =>
+  typeof window !== "undefined" &&
+  typeof window.matchMedia === "function" &&
+  window.matchMedia("(min-width: 640px)").matches;
+
 const Home = () => {
   const mapContainer = useRef(null);
   const map = useRef(null);
@@ -79,8 +98,20 @@ const Home = () => {
   // handlers, which are registered once on mount and would otherwise close
   // over stale state.
   const universityFilterRef = useRef({ nyu: false, columbia: false });
+  // Same reason as universityFilterRef: the neighborhood click handler is
+  // registered once inside the map's "load" callback, so reading budget state
+  // directly would capture whatever it was on mount and never update. The
+  // listing links need the *current* slider value.
+  const budgetFilterRef = useRef({ showBudget: false, budgetMax: 2750 });
+  // The pinned click popup, kept so a second click can replace it rather than
+  // stacking popups, and so hover can tell whether one is currently open.
+  const neighborhoodPopupRef = useRef(null);
 
   const [mapLoaded, setMapLoaded] = useState(false);
+
+  // The neighborhood the user last clicked. Drives the sidebar detail panel;
+  // null means nothing is selected and the panel is hidden.
+  const [selectedNeighborhood, setSelectedNeighborhood] = useState(null);
 
   // Centered on NYC (all 5 boroughs)
   const [lng, setLng] = useState(-73.9731);
@@ -88,6 +119,11 @@ const Home = () => {
   const [zoom, setZoom] = useState(10.2);
 
   const [showInfo, setShowInfo] = useState(false);
+
+  // Mobile-only: the floating sidebar becomes a bottom sheet below the `xl`
+  // breakpoint, collapsed to a small handle by default so it doesn't cover
+  // the map. Irrelevant on desktop, where the sidebar is always fully shown.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
 
   const [showBoroughColors, setShowBoroughColors] = useState(false);
   const [showParks, setShowParks] = useState(false);
@@ -127,7 +163,7 @@ const Home = () => {
           data.features.forEach((feature) => {
             const coordinates = feature.geometry.coordinates;
             const marker = new maplibregl.Marker({
-              color: "#16a34a",
+              color: "#2FD98A",
               scale: 0.65,
             })
               .setLngLat(coordinates)
@@ -153,7 +189,7 @@ const Home = () => {
           data.features.forEach((feature) => {
             const coordinates = feature.geometry.coordinates;
             const marker = new maplibregl.Marker({
-              color: "#dc2626",
+              color: "#FF5C5C",
               scale: 0.65,
             })
               .setLngLat(coordinates)
@@ -171,10 +207,6 @@ const Home = () => {
       removeAllMarkers(traderJoesMarkersRef);
     }
 
-    // University campus pins (single fixed location each, square badge
-    // icons). Square badges are visually centered on their coordinate, so
-    // anchor: "center" is used here instead of the "bottom" anchor a
-    // teardrop pin would need.
     if (nyu) {
       if (nyuMarkerRef.current.length === 0) {
         const el = document.createElement("img");
@@ -183,8 +215,8 @@ const Home = () => {
         el.style.width = "36px";
         el.style.height = "36px";
         el.style.cursor = "pointer";
-        el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.35)";
-        el.style.borderRadius = "10px";
+        el.style.boxShadow = "0 0 0 1px #464648, 0 2px 10px rgba(15,15,17,0.7)";
+        el.style.borderRadius = "3px";
         const marker = new maplibregl.Marker({
           element: el,
           anchor: "center",
@@ -205,8 +237,8 @@ const Home = () => {
         el.style.width = "36px";
         el.style.height = "36px";
         el.style.cursor = "pointer";
-        el.style.boxShadow = "0 1px 4px rgba(0,0,0,0.35)";
-        el.style.borderRadius = "10px";
+        el.style.boxShadow = "0 0 0 1px #464648, 0 2px 10px rgba(15,15,17,0.7)";
+        el.style.borderRadius = "3px";
         const marker = new maplibregl.Marker({
           element: el,
           anchor: "center",
@@ -317,7 +349,7 @@ const Home = () => {
     //SETTING INITIAL MAP IN NYC
     map.current = new maplibregl.Map({
       container: mapContainer.current,
-      style: "https://tiles.openfreemap.org/styles/positron",
+      style: "https://tiles.openfreemap.org/styles/dark",
       center: [lng, lat],
       zoom: zoom,
       minZoom: 9.5,
@@ -349,9 +381,9 @@ const Home = () => {
         type: "line",
         source: "neighborhoods",
         paint: {
-          "line-color": "#64748b",
+          "line-color": "#464648",
           "line-width": 1,
-          "line-opacity": 0.55,
+          "line-opacity": 0.5,
         },
       });
 
@@ -364,7 +396,7 @@ const Home = () => {
         type: "fill",
         source: "neighborhoods",
         paint: {
-          "fill-color": "#1d4ed8",
+          "fill-color": "#8130FA",
         },
       });
 
@@ -375,33 +407,28 @@ const Home = () => {
         type: "line",
         source: "neighborhoods",
         paint: {
-          "line-color": "#ffffff",
+          "line-color": "#8A858C",
           "line-width": 1,
-          "line-opacity": 0.85,
+          "line-opacity": 0.35,
         },
       });
 
-      // SUBWAY LINES + STATIONS (toggled visible/invisible via the Subway
-      // filter -- layout.visibility starts "none" and is flipped in the
-      // second useEffect below, rather than adding/removing the layers
-      // entirely, since these are static datasets with no per-filter score).
+      // SUBWAY LINES + STATIONS
+
       map.current.addSource("subway-lines", {
         type: "geojson",
         data: subwayLines,
       });
 
-      // Route geometries, colored per-route using each feature's own
-      // "color" property (the official MTA bullet color, set when the
-      // GeoJSON was built from the MTA Subway Service Lines dataset).
       map.current.addLayer({
         id: "subway-lines-casing",
         type: "line",
         source: "subway-lines",
         layout: { visibility: "none" },
         paint: {
-          "line-color": "#ffffff",
-          "line-width": 4.5,
-          "line-opacity": 0.9,
+          "line-color": "#0F0F11",
+          "line-width": 5,
+          "line-opacity": 0.85,
         },
       });
       map.current.addLayer({
@@ -431,8 +458,8 @@ const Home = () => {
         layout: { visibility: "none" },
         paint: {
           "circle-radius": ["interpolate", ["linear"], ["zoom"], 10, 2.5, 15, 5.5],
-          "circle-color": "#1f2937",
-          "circle-stroke-color": "#ffffff",
+          "circle-color": "#F1F1F1",
+          "circle-stroke-color": "#0F0F11",
           "circle-stroke-width": 1.5,
         },
       });
@@ -440,10 +467,13 @@ const Home = () => {
       // POPUP BASED ON NEIGHBORHOOD/BOROUGH
       const popupDiv = document.createElement("div");
       popupDiv.style.position = "absolute";
-      popupDiv.style.backgroundColor = "#334155";
-      popupDiv.style.color = "white";
-      popupDiv.style.padding = "10px";
-      popupDiv.style.borderRadius = "1px";
+      popupDiv.style.backgroundColor = "rgba(28, 27, 30, 0.96)";
+      popupDiv.style.color = "#f1f1f1";
+      popupDiv.style.padding = "10px 12px";
+      popupDiv.style.borderRadius = "3px";
+      popupDiv.style.border = "1px solid #464648";
+      popupDiv.style.boxShadow = "0 8px 28px rgba(15, 15, 17, 0.65)";
+      popupDiv.style.backdropFilter = "blur(6px)";
       popupDiv.style.pointerEvents = "none"; // Allow mouse events to pass through
       popupDiv.style.display = "none"; // Initially hidden
       document.body.appendChild(popupDiv);
@@ -457,20 +487,20 @@ const Home = () => {
         if (nyu) {
           const eta = estimateETA(properties.distance_from_nyu);
           if (eta != null) {
-            etaLines += `<p style="color:#93c5fd; font-size:12px; margin-top:4px;">NYU ETA: ~${eta} min</p>`;
+            etaLines += `<p style="color:#bebabf; font-family:'Geist Mono',ui-monospace,monospace; font-size:11px; letter-spacing:0.08em; margin-top:6px; text-align:center;">NYU ETA \u00b7 ~${eta} MIN</p>`;
           }
         }
         if (columbia) {
           const eta = estimateETA(properties.distance_from_columbia);
           if (eta != null) {
-            etaLines += `<p style="color:#93c5fd; font-size:12px; margin-top:2px;">Columbia ETA: ~${eta} min</p>`;
+            etaLines += `<p style="color:#bebabf; font-family:'Geist Mono',ui-monospace,monospace; font-size:11px; letter-spacing:0.08em; margin-top:3px; text-align:center;">COLUMBIA ETA \u00b7 ~${eta} MIN</p>`;
           }
         }
         return `
 
             <div>
-            <h3 style="color:white; text-align:center; font-size:15px;">${boro}</h3>
-            <p style="color: white; font-size: 13px; text-align:center;">${name}</p>
+            <h3 style="color:#f1f1f1; text-align:center; font-family:'Geist Mono',ui-monospace,monospace; font-size:11px; font-weight:500; letter-spacing:0.08em; text-transform:uppercase;">${boro}</h3>
+            <p style="color:#f1f1f1; font-size:14px; font-weight:300; letter-spacing:0.02em; text-align:center; margin-top:3px;">${name}</p>
             ${etaLines}
           </div>
             `;
@@ -480,6 +510,9 @@ const Home = () => {
         "mouseenter",
         ["neighborhood-fill", "score-fill"],
         (e) => {
+          // A pinned click popup is showing; don't also trail a hover
+          // tooltip under the cursor as the user moves toward its links.
+          if (neighborhoodPopupRef.current) return;
           if (e.features.length > 1) {
             const { name } = e.features[0].properties;
             const { boro } = e.features[1].properties;
@@ -500,6 +533,7 @@ const Home = () => {
         "mousemove",
         ["neighborhood-fill", "score-fill"],
         (e) => {
+          if (neighborhoodPopupRef.current) return;
           if (e.features.length > 1) {
             const { name } = e.features[0].properties;
             const { boro } = e.features[1].properties;
@@ -530,6 +564,102 @@ const Home = () => {
         }
       );
 
+      // NEIGHBORHOOD CLICK: pins a popup with the neighborhood's details and
+      // deep links out to apartment listings for it. The hover tooltip above
+      // can't hold these -- it has pointer-events: none and follows the
+      // cursor -- so this is a separate, pinned maplibregl popup, the same
+      // pattern the subway-station popup below already uses.
+      map.current.on("click", ["neighborhood-fill", "score-fill"], (e) => {
+        if (!e.features || !e.features.length) return;
+        const props = e.features[0].properties;
+        if (!props || !props.name) return;
+
+        // Feeds the sidebar detail panel, which is what mobile sees.
+        setSelectedNeighborhood(props);
+
+        // On phones the sheet is usually collapsed to a handle, so the panel
+        // we just populated would be scrolled out of sight. Open it.
+        if (!isDesktopWidth()) {
+          setSidebarCollapsed(false);
+          return; // no pinned popup at this width -- the panel has it
+        }
+
+        // Read the budget through the ref, not from state: this callback was
+        // registered once on mount and would otherwise hold the mount-time
+        // slider value forever.
+        const { showBudget: budgetOn, budgetMax: budgetCap } =
+          budgetFilterRef.current;
+        // Only apply a price cap if the user actually turned Budget on --
+        // otherwise the slider's idle default would silently filter their
+        // results to a number they never chose.
+        const maxRent = budgetOn ? budgetCap : null;
+        const links = buildListingLinks(props, maxRent);
+
+        const linkRows = links
+          .map(
+            (l) => `<a href="${escapeHtml(l.href)}" target="_blank" rel="noreferrer noopener"
+                 style="display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+                        padding:7px 9px; margin-bottom:4px; border:1px solid #2e2d31; border-radius:3px;
+                        background:#19191c; text-decoration:none;">
+                 <span style="color:#8130fa; font-size:13px; font-weight:400; white-space:nowrap;">${escapeHtml(l.label)} &#8599;</span>
+                 <span style="color:#8a858c; font-family:'Geist Mono',ui-monospace,monospace;
+                              font-size:10px; letter-spacing:0.04em; text-align:right; flex:1 1 auto;">${escapeHtml(l.scope)}</span>
+               </a>`
+          )
+          .join("");
+
+        const rentLine =
+          props.cost != null
+            ? `<p style="color:#bebabf; font-size:12px; font-weight:300; margin-top:3px;">
+                 Est. 1BR rent &middot; $${escapeHtml(props.cost)}/mo</p>`
+            : "";
+
+        const popup = new maplibregl.Popup({
+          closeButton: true,
+          offset: 12,
+          maxWidth: "290px",
+        })
+          .setLngLat(e.lngLat)
+          .setHTML(
+            `<div style="min-width:225px;">
+              <p style="color:#8a858c; font-family:'Geist Mono',ui-monospace,monospace;
+                        font-size:10px; font-weight:500; letter-spacing:0.08em;
+                        text-transform:uppercase;">${escapeHtml(props.boro)}</p>
+              <p style="color:#f1f1f1; font-size:15px; font-weight:500;
+                        letter-spacing:-0.01em; margin-top:2px;">${escapeHtml(props.name)}</p>
+              ${rentLine}
+              <div style="border-top:1px solid #2e2d31; margin:11px 0 9px;"></div>
+              <p style="color:#f1f1f1; font-family:'Geist Mono',ui-monospace,monospace;
+                        font-size:10px; font-weight:500; letter-spacing:0.08em;
+                        text-transform:uppercase; margin-bottom:7px;">Find apartments</p>
+              ${linkRows}
+              <p style="color:#6a5c7d; font-size:10px; font-weight:300; line-height:1.45; margin-top:7px;">
+                Searches cover this ZIP and borough, which only approximate the
+                neighborhood outline.</p>
+            </div>`
+          )
+          .addTo(map.current);
+
+        // Replace rather than stack, and let hover resume once it's dismissed.
+        if (neighborhoodPopupRef.current) neighborhoodPopupRef.current.remove();
+        neighborhoodPopupRef.current = popup;
+        popup.on("close", () => {
+          if (neighborhoodPopupRef.current === popup) {
+            neighborhoodPopupRef.current = null;
+          }
+        });
+        // The trailing hover tooltip is suppressed while this is open; make
+        // sure whatever was on screen at click time goes away too.
+        popupDiv.style.display = "none";
+      });
+
+      map.current.on("mouseenter", ["neighborhood-fill", "score-fill"], () => {
+        map.current.getCanvas().style.cursor = "pointer";
+      });
+      map.current.on("mouseleave", ["neighborhood-fill", "score-fill"], () => {
+        map.current.getCanvas().style.cursor = "";
+      });
+
       // STATION CLICK POPUP: shows the station name and a colored bullet
       // for each line it serves (MTA_ROUTE_COLORS, defined above the
       // component, since the GeoJSON source loads asynchronously).
@@ -543,7 +673,8 @@ const Home = () => {
             const color = MTA_ROUTE_COLORS[r] || "#808183";
             return `<span style="display:inline-flex; align-items:center; justify-content:center;
                 width:20px; height:20px; border-radius:50%; background:${color};
-                color:white; font-size:11px; font-weight:600; margin:2px;">${r}</span>`;
+                color:#0b0b0d; font-family:'Geist Mono',ui-monospace,monospace; font-size:11px;
+                font-weight:500; margin:2px;">${r}</span>`;
           })
           .join("");
 
@@ -551,8 +682,8 @@ const Home = () => {
           .setLngLat(e.lngLat)
           .setHTML(
             `<div style="min-width:140px;">
-              <p style="font-weight:600; font-size:13px; margin-bottom:4px;">${name}</p>
-              <div style="display:flex; flex-wrap:wrap;">${bullets}</div>
+              <p style="color:#f1f1f1; font-size:14px; font-weight:300; letter-spacing:0.02em; margin-bottom:7px;">${name}</p>
+              <div style="display:flex; flex-wrap:wrap; margin:-2px;">${bullets}</div>
             </div>`
           )
           .addTo(map.current);
@@ -580,12 +711,6 @@ const Home = () => {
         }
       });
 
-      // Only flip this once sources/layers above actually exist on the
-      // style -- it gates the second useEffect below, which calls
-      // setLayoutProperty/setPaintProperty on those layers. Setting it
-      // outside this "load" callback is a race: on slower connections
-      // (e.g. the deployed site vs. localhost) the second effect can run
-      // before the style finishes loading and crash maplibre internals.
       setMapLoaded(true);
      } catch (err) {
       // maplibre-gl swallows errors thrown inside "load" listeners on
@@ -602,14 +727,14 @@ const Home = () => {
 
   useEffect(() => {
     universityFilterRef.current = { nyu, columbia };
+    // Keep the click handler's view of the budget current (see budgetFilterRef).
+    budgetFilterRef.current = { showBudget, budgetMax };
 
     if (map.current && map.current.isStyleLoaded() && mapLoaded) {
       updateOpacity();
       showMarkers();
 
-      // Subway lines + station dots are static datasets (no proximity
-      // score), so rather than adding/removing layers we just flip their
-      // visibility with the Subway filter toggle.
+      // Subway lines + station dots are static datasets
       const subwayVisibility = showSubway ? "visible" : "none";
       map.current.setLayoutProperty(
         "subway-lines-casing",
@@ -635,18 +760,18 @@ const Home = () => {
               "match",
               ["get", "boro"],
               "Manhattan",
-              "#1d4ed8", // blue
+              "#5AA7FF", // blue
               "Brooklyn",
-              "#ea580c", // orange
+              "#FF9F45", // orange
               "Queens",
-              "#16a34a", // green
+              "#3FD9A0", // green
               "Bronx",
-              "#dc2626", // red
+              "#FF5C7A", // red
               "Staten Island",
-              "#9333ea", // purple
-              "#1d4ed8", // Default value if no match
+              "#8130FA", // purple
+              "#5AA7FF", // Default value if no match
             ]
-          : "#1d4ed8" // static fill color; fill-opacity carries the shading
+          : "#8130FA" // static fill color; fill-opacity carries the shading
       );
     }
   }, [
@@ -664,6 +789,27 @@ const Home = () => {
     map.current,
   ]);
 
+  // Entry animation for the sidebar/modal rows. This used to be an
+  // IntersectionObserver adding an "is-revealed" class imperatively via
+  // classList -- but every filter row's own className already depends on
+  // its own toggle state (for the active/inactive coloring), so clicking a
+  // row makes React recompute and overwrite that row's class attribute.
+  // React has no idea "is-revealed" was ever there (it was added outside
+  // React's own render), so it silently drops it on the next class-string
+  // rewrite -- which is exactly what happens the instant you click the row
+  // that owns it. The row snaps back to the [data-reveal] "opacity: 0"
+  // resting state and, since the observer had already unobserved it, never
+  // gets it back. That's the "button disappears on click" bug.
+  //
+  // Fix: don't mutate classes outside of React. The animate-px-reveal
+  // class below is baked directly into each element's own className
+  // template, so it's part of the same string React diffs and re-renders
+  // every time -- there's nothing left for a re-render to accidentally
+  // drop. It's a CSS animation (see index.css / tailwind.config.js) that
+  // plays once when the element is created and holds its end state
+  // (animation-fill-mode: both), so it still gives the staggered fade-in
+  // on first mount without needing any imperative JS at all.
+
   const handleZoomIn = () => {
     map.current.zoomTo(map.current.getZoom() + 1, { duration: 200 });
   };
@@ -677,34 +823,42 @@ const Home = () => {
       <div
         className={`${
           showInfo ? " opacity-50" : "opacity-100"
-        }  bg-white relative h-screen w-screen overflow-hidden`}
+        }  bg-ink-900 relative h-screen w-screen overflow-hidden`}
         onClick={() => setShowInfo(false)}
       >
-        {/* FLOATING SIDEBAR */}
+        {/* FLOATING SIDEBAR (sm and up) / BOTTOM SHEET (below sm) */}
         <div
-          className="absolute z-20 xl:top-4 xl:left-4 xl:bottom-4 top-2 left-2 bottom-2
-              xl:w-[26%] w-[58%] max-w-sm rounded-2xl shadow-2xl ring-1 ring-black/5
-              overflow-y-auto bg-gray-50/95 backdrop-blur-sm"
+          className={`fixed sm:absolute z-20 bottom-0 left-0 right-0
+              sm:top-4 sm:left-4 sm:bottom-4 sm:right-auto
+              w-full max-w-[346px] mx-auto sm:mx-0 sm:max-h-none
+              ${sidebarCollapsed ? "max-h-14" : "max-h-[70vh]"}
+              sm:rounded-xl rounded-t-xl shadow-panel ring-1 ring-rule-soft
+              overflow-y-auto px-scroll bg-ink-900/95 backdrop-blur-md
+              transition-[max-height] duration-380 ease-brand`}
           onClick={(e) => e.stopPropagation()}
         >
           <div
             style={{ width: "100%" }}
-            className="bg-white/90 backdrop-blur-sm border-b border-gray-200 rounded-t-2xl sticky top-0 z-10 xl:p-4 p-2 flex items-center gap-2"
+            className="relative bg-ink-850/90 backdrop-blur-md border-b border-rule-soft sm:rounded-t-xl rounded-t-xl sticky top-0 z-10 sm:p-4 p-2 pt-3 flex items-center gap-2.5 sm:cursor-default cursor-pointer"
+            onClick={() => setSidebarCollapsed((prev) => !prev)}
           >
+            {/* Drag handle, mobile only -- signals the sheet can be toggled */}
+            <span className="sm:hidden absolute top-1.5 left-1/2 -translate-x-1/2 w-10 h-0.5 rounded-sm bg-rule" />
             <img
               src={logo}
               alt="logo"
-              className="2xl:w-9 2xl:h-9 xl:w-8 xl:h-8 lg:w-7 lg:h-7 md:w-6 md:h-6 w-5 h-5"
+              className="sm:w-7 sm:h-7 w-5 h-5"
             />
-            <h1 className="font-semibold text-indigo-700 font-mono title">
-              Proximity
+            <h1 className="text-paper font-mono title">
+              PROXIMITY
             </h1>
             <button
               type="button"
-              className="ml-auto flex items-center justify-center rounded-full
-                  text-gray-400 border border-gray-300 xl:h-6 xl:w-6 w-5 h-5 font-semibold
-                  hover:text-white hover:bg-indigo-600 hover:border-indigo-600 duration-200 cursor-pointer
-                  font-serif lg:text-xs text-xxs"
+              aria-label="About Proximity"
+              className="px-interactive px-focus ml-auto flex items-center justify-center rounded-sm
+                  text-paper-mid border border-rule sm:h-6 sm:w-6 w-5 h-5 font-medium
+                  hover:text-brand-ink hover:bg-brand hover:border-brand cursor-pointer
+                  font-mono sm:text-micro text-xxs"
               onClick={(e) => {
                 e.stopPropagation();
                 setShowInfo(true);
@@ -712,160 +866,397 @@ const Home = () => {
             >
               i
             </button>
+            {/* Chevron, mobile only -- shows expand/collapse state */}
+            <span
+              className={`sm:hidden flex items-center justify-center text-paper-low transition-transform duration-380 ease-brand ${
+                sidebarCollapsed ? "rotate-180" : ""
+              }`}
+            >
+              ▾
+            </span>
           </div>
-          <div className="flex flex-col xl:py-4 xl:px-3 py-2 px-2 rounded-b-2xl">
-            <h1 className=" text-gray-900 font-semibold subTitle">
-              Add Filters
-            </h1>
-            <h3 className="mb-2 text-gray-500 subTitle2">
-              Refine neighborhoods
-            </h3>
-            <div className="flex flex-col gap-1.5 pb-4 mb-3 border-b border-gray-200 bodyText">
+          <div className="flex flex-col sm:py-4 sm:px-3 py-2 px-2 rounded-b-xl">
+            <div className="px-stagger flex flex-col gap-1.5 pb-2 bodyText">
+              {/* University -- expands to NYU/Columbia sub-toggles */}
               <div
-                onClick={() => setShowUniversity(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                className={`px-interactive animate-px-reveal rounded-sm border ${
                   showUniversity
-                    ? "bg-violet-50 border-violet-200 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-violet-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-uni/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-violet-600 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <FaUniversity className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
-                </span>
-                <span className="font-medium text-gray-800">University</span>
+                <div
+                  onClick={() => {
+                    if (showUniversity) {
+                      setShowUniversity(false);
+                      setNyu(false);
+                      setColumbia(false);
+                    } else {
+                      setShowUniversity(true);
+                    }
+                  }}
+                  className="flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 cursor-pointer"
+                >
+                  <span
+                    className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-uni text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                      showUniversity ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                    }`}
+                  >
+                    <FaUniversity className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
+                  </span>
+                  <span
+                    className={`px-interactive ${
+                      showUniversity ? "text-paper" : "text-paper-mid"
+                    }`}
+                  >
+                    University
+                  </span>
+                </div>
                 {showUniversity && (
-                  <BsCheckCircleFill className="ml-auto text-violet-500 xl:w-4 xl:h-4 w-3 h-3" />
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="px-panel-in grid grid-cols-2 sm:gap-2 gap-1 sm:px-2.5 px-2 sm:pb-2.5 pb-2"
+                  >
+                    <div
+                      onClick={() => setNyu(!nyu)}
+                      className={`${
+                        nyu
+                          ? "bg-cat-uni border-cat-uni text-ink-900"
+                          : "bg-ink-850 border-rule-soft text-paper-mid hover:border-rule hover:text-paper"
+                      } px-interactive text-center border rounded-sm sm:px-2 px-0.5 py-1.5 cursor-pointer bodyText2`}
+                    >
+                      NYU
+                    </div>
+                    <div
+                      onClick={() => setColumbia(!columbia)}
+                      className={`${
+                        columbia
+                          ? "bg-cat-uni border-cat-uni text-ink-900"
+                          : "bg-ink-850 border-rule-soft text-paper-mid hover:border-rule hover:text-paper"
+                      } px-interactive text-center border rounded-sm sm:px-2 px-0.5 py-1.5 cursor-pointer bodyText2`}
+                    >
+                      Columbia
+                    </div>
+                  </div>
                 )}
               </div>
+
+              {/* Safety -- simple toggle, no sub-options */}
               <div
-                onClick={() => setShowCrime(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                onClick={() => setShowCrime(!showCrime)}
+                className={`px-interactive animate-px-reveal flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 rounded-sm border cursor-pointer ${
                   showCrime
-                    ? "bg-rose-50 border-rose-200 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-rose-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-safety/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-rose-600 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <BsShield className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
+                <span
+                  className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-safety text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                    showCrime ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                  }`}
+                >
+                  <BsShield className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
                 </span>
-                <span className="font-medium text-gray-800">Safety</span>
-                {showCrime && (
-                  <BsCheckCircleFill className="ml-auto text-rose-500 xl:w-4 xl:h-4 w-3 h-3" />
-                )}
+                <span
+                  className={`px-interactive ${
+                    showCrime ? "text-paper" : "text-paper-mid"
+                  }`}
+                >
+                  Safety
+                </span>
               </div>
+
+              {/* Parks -- simple toggle, no sub-options */}
               <div
-                onClick={() => setShowParks(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                onClick={() => setShowParks(!showParks)}
+                className={`px-interactive animate-px-reveal flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 rounded-sm border cursor-pointer ${
                   showParks
-                    ? "bg-emerald-50 border-emerald-200 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-emerald-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-parks/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-emerald-600 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <BsTree className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
+                <span
+                  className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-parks text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                    showParks ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                  }`}
+                >
+                  <BsTree className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
                 </span>
-                <span className="font-medium text-gray-800">Parks</span>
-                {showParks && (
-                  <BsCheckCircleFill className="ml-auto text-emerald-500 xl:w-4 xl:h-4 w-3 h-3" />
-                )}
+                <span
+                  className={`px-interactive ${
+                    showParks ? "text-paper" : "text-paper-mid"
+                  }`}
+                >
+                  Parks
+                </span>
               </div>
+
+              {/* Grocery Chains -- expands to Trader Joe's/Whole Foods sub-toggles */}
               <div
-                onClick={() => setShowGrocery(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                className={`px-interactive animate-px-reveal rounded-sm border ${
                   showGrocery
-                    ? "bg-orange-50 border-orange-200 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-orange-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-grocery/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-orange-600 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <FiShoppingCart className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
-                </span>
-                <span className="font-medium text-gray-800">Grocery Chains</span>
+                <div
+                  onClick={() => {
+                    if (showGrocery) {
+                      setShowGrocery(false);
+                      setWholeFoods(false);
+                      setTraderJoes(false);
+                    } else {
+                      setShowGrocery(true);
+                    }
+                  }}
+                  className="flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 cursor-pointer"
+                >
+                  <span
+                    className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-grocery text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                      showGrocery ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                    }`}
+                  >
+                    <FiShoppingCart className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
+                  </span>
+                  <span
+                    className={`px-interactive ${
+                      showGrocery ? "text-paper" : "text-paper-mid"
+                    }`}
+                  >
+                    Grocery Chains
+                  </span>
+                </div>
                 {showGrocery && (
-                  <BsCheckCircleFill className="ml-auto text-orange-500 xl:w-4 xl:h-4 w-3 h-3" />
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="px-panel-in grid grid-cols-2 sm:gap-2 gap-1 sm:px-2.5 px-2 sm:pb-2.5 pb-2"
+                  >
+                    <div
+                      onClick={() => setTraderJoes(!traderJoes)}
+                      className={`${
+                        traderJoes
+                          ? "bg-cat-grocery border-cat-grocery text-ink-900"
+                          : "bg-ink-850 border-rule-soft text-paper-mid hover:border-rule hover:text-paper"
+                      } px-interactive text-center border rounded-sm sm:px-2 px-0.5 py-1.5 cursor-pointer bodyText2`}
+                    >
+                      Trader Joe's
+                    </div>
+                    <div
+                      onClick={() => setWholeFoods(!wholeFoods)}
+                      className={`${
+                        wholeFoods
+                          ? "bg-cat-grocery border-cat-grocery text-ink-900"
+                          : "bg-ink-850 border-rule-soft text-paper-mid hover:border-rule hover:text-paper"
+                      } px-interactive text-center border rounded-sm sm:px-2 px-0.5 py-1.5 cursor-pointer bodyText2`}
+                    >
+                      Whole Foods
+                    </div>
+                  </div>
                 )}
               </div>
+
+              {/* Subway Stations -- simple toggle, no sub-options */}
               <div
-                onClick={() => setShowSubway(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                onClick={() => setShowSubway(!showSubway)}
+                className={`px-interactive animate-px-reveal flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 rounded-sm border cursor-pointer ${
                   showSubway
-                    ? "bg-blue-50 border-blue-200 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-blue-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-subway/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-blue-600 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <BsTrainFront className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
+                <span
+                  className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-subway text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                    showSubway ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                  }`}
+                >
+                  <BsTrainFront className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
                 </span>
-                <span className="font-medium text-gray-800">Subway Stations</span>
-                {showSubway && (
-                  <BsCheckCircleFill className="ml-auto text-blue-500 xl:w-4 xl:h-4 w-3 h-3" />
-                )}
+                <span
+                  className={`px-interactive ${
+                    showSubway ? "text-paper" : "text-paper-mid"
+                  }`}
+                >
+                  Subway Stations
+                </span>
               </div>
+
+              {/* Budget -- expands to the rent slider */}
               <div
-                onClick={() => setShowBudget(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                className={`px-interactive animate-px-reveal rounded-sm border ${
                   showBudget
-                    ? "bg-amber-50 border-amber-200 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-amber-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-budget/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-amber-500 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <BiMoneyWithdraw className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
-                </span>
-                <span className="font-medium text-gray-800">Budget</span>
+                <div
+                  onClick={() => setShowBudget(!showBudget)}
+                  className="flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 cursor-pointer"
+                >
+                  <span
+                    className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-budget text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                      showBudget ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                    }`}
+                  >
+                    <BiMoneyWithdraw className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
+                  </span>
+                  <span
+                    className={`px-interactive ${
+                      showBudget ? "text-paper" : "text-paper-mid"
+                    }`}
+                  >
+                    Budget
+                  </span>
+                </div>
                 {showBudget && (
-                  <BsCheckCircleFill className="ml-auto text-amber-500 xl:w-4 xl:h-4 w-3 h-3" />
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="px-panel-in bodyText2 sm:px-2.5 px-2 sm:pb-2.5 pb-2"
+                  >
+                    <div className="slidecontainer">
+                      <p className="text-paper-low pb-2">Max Monthly Rent (1BR):</p>
+                      <input
+                        onChange={(e) => {
+                          setBudgetMax(parseInt(e.target.value));
+                        }}
+                        type="range"
+                        min="2000"
+                        max="4000"
+                        step="50"
+                        value={budgetMax}
+                        className="slider px-focus"
+                        id="myRange"
+                      />
+                      <div className="flex flex-col gap-0.5 mt-2.5 py-2 px-2.5 bg-ink-850 rounded-sm w-full mx-auto border border-rule-soft">
+                        <p className="text-paper-low">Max 1BR Rent: </p>
+                        <span className="text-paper font-medium">${budgetMax}</span>
+                      </div>
+                    </div>
+                  </div>
                 )}
               </div>
+
+              {/* BikeShare -- simple toggle, no sub-options */}
               <div
-                onClick={() => setShowBikeshare(true)}
-                className={`flex items-center gap-2 w-full xl:py-2 xl:px-2.5 py-1.5 px-2 rounded-xl border transition-all duration-200 ${
+                onClick={() => setShowBikeshare(!showBikeshare)}
+                className={`px-interactive animate-px-reveal flex items-center gap-2.5 w-full sm:py-2.5 sm:px-2.5 py-1.5 px-2 rounded-sm border cursor-pointer ${
                   showBikeshare
-                    ? "bg-slate-100 border-slate-300 cursor-not-allowed"
-                    : "bg-white border-gray-200 hover:border-slate-300 hover:shadow-sm cursor-pointer"
+                    ? "bg-ink-800 border-cat-bike/35"
+                    : "bg-ink-850 border-rule-soft hover:border-rule hover:bg-ink-800"
                 }`}
               >
-                <span className="flex items-center justify-center shrink-0 rounded-full bg-slate-500 text-white xl:w-7 xl:h-7 w-5 h-5">
-                  <PiPersonSimpleBikeBold className="xl:w-3.5 xl:h-3.5 w-2.5 h-2.5" />
+                <span
+                  className={`px-interactive flex items-center justify-center shrink-0 rounded-sm bg-cat-bike text-ink-900 sm:w-7 sm:h-7 w-5 h-5 ${
+                    showBikeshare ? "opacity-100 ring-1 ring-inset ring-ink-900/25" : "opacity-40"
+                  }`}
+                >
+                  <PiPersonSimpleBikeBold className="sm:w-3.5 sm:h-3.5 w-2.5 h-2.5" />
                 </span>
-                <span className="font-medium text-gray-800">BikeShare</span>
-                {showBikeshare && (
-                  <BsCheckCircleFill className="ml-auto text-slate-500 xl:w-4 xl:h-4 w-3 h-3" />
-                )}
+                <span
+                  className={`px-interactive ${
+                    showBikeshare ? "text-paper" : "text-paper-mid"
+                  }`}
+                >
+                  BikeShare
+                </span>
               </div>
             </div>
 
-            <div className="flex flex-col pb-4">
-              <h1 className=" text-gray-900 font-semibold subTitle">
-                Active
-              </h1>
-              <h2 className="text-gray-500 subTitle2 mb-1">
-                Click to remove
-              </h2>
-              <div>{displayActiveFilters()}</div>
-            </div>
+            {/* SELECTED NEIGHBORHOOD -- mobile only. On desktop the pinned map
+                popup carries this; at phone widths a popup over the map is too
+                cramped, so the same links land here instead. */}
+            {selectedNeighborhood && (
+              <div className="sm:hidden px-panel-in mt-2 pt-3 border-t border-rule-soft">
+                <div className="flex items-start gap-2">
+                  <div className="min-w-0">
+                    <p className="px-label text-micro text-paper-low">
+                      {selectedNeighborhood.boro}
+                    </p>
+                    <p className="text-paper text-bodymd font-medium mt-0.5">
+                      {selectedNeighborhood.name}
+                    </p>
+                    {selectedNeighborhood.cost != null && (
+                      <p className="text-paper-mid text-bodysm mt-0.5">
+                        Est. 1BR rent &middot; ${selectedNeighborhood.cost}/mo
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Clear selected neighborhood"
+                    onClick={() => setSelectedNeighborhood(null)}
+                    className="px-interactive px-focus ml-auto shrink-0 flex items-center justify-center
+                        rounded-sm border border-rule text-paper-mid w-5 h-5 font-mono text-micro
+                        hover:text-brand-ink hover:bg-brand hover:border-brand cursor-pointer"
+                  >
+                    &times;
+                  </button>
+                </div>
+
+                <p className="px-label text-micro text-paper mt-3 mb-1.5">
+                  Find apartments
+                </p>
+                <div className="flex flex-col gap-1">
+                  {buildListingLinks(
+                    selectedNeighborhood,
+                    showBudget ? budgetMax : null
+                  ).map((link) => (
+                    <a
+                      key={link.id}
+                      href={link.href}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="px-interactive px-focus flex items-baseline justify-between gap-2
+                          rounded-sm border border-rule-soft bg-ink-850 px-2 py-1.5
+                          hover:border-rule hover:bg-ink-800"
+                    >
+                      <span className="text-brand text-bodysm whitespace-nowrap">{link.label} &#8599;</span>
+                      <span className="font-mono text-paper-low text-[10px] tracking-wide text-right">
+                        {link.scope}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+                <p className="text-paper-lav text-[10px] font-light leading-snug mt-2">
+                  Searches cover this ZIP and borough, which only approximate
+                  the neighborhood outline.
+                </p>
+              </div>
+            )}
           </div>
         </div>
 
         <div className="absolute inset-0 h-screen w-screen">
-          <div className="absolute top-2 right-2 z-10 flex flex-col">
+          <div
+            className="absolute top-2 right-2 z-10 flex flex-col shadow-panel animate-px-reveal"
+          >
             <button
-              className="text-xl font-extrabold text-black rounded-t-xl border-2 shadow-2xl  bg-white hover:bg-gray-200 duration-200 p-1 w-9 h-10"
+              aria-label="Zoom in"
+              className="px-interactive px-focus text-lg font-normal text-paper-mid rounded-t-sm border border-rule-soft bg-ink-850/95 backdrop-blur-md hover:bg-ink-800 hover:border-rule hover:text-paper p-1 w-9 h-9"
               onClick={handleZoomIn}
             >
               +
             </button>
             <button
-              className="text-xl font-extrabold text-black rounded-b-xl border-2 border-t-0 shadow-2xl bg-white hover:bg-gray-200 duration-200 p-1 w-9 h-10"
+              aria-label="Zoom out"
+              className="px-interactive px-focus text-lg font-normal text-paper-mid rounded-b-sm border border-rule-soft border-t-0 bg-ink-850/95 backdrop-blur-md hover:bg-ink-800 hover:border-rule hover:text-paper p-1 w-9 h-9"
               onClick={handleZoomOut}
             >
               -
             </button>
           </div>
 
-          <div className="absolute bottom-8 right-2 z-10 flex flex-col">
+          <div
+            className={`absolute right-2 z-10 flex flex-col transition-[bottom] duration-380 ease-brand animate-px-reveal ${
+              sidebarCollapsed ? "bottom-20 sm:bottom-8" : "bottom-[72vh] sm:bottom-8"
+            }`}
+          >
             <button
-              className="xl:text-md md:text-sm text-xs font-semibold text-black rounded-md lg:border-2 border-1  bg-white hover:bg-gray-200 duration-200 p-1 w-full"
+              className={`px-interactive px-focus px-label text-micro sm:text-label rounded-sm border
+                  backdrop-blur-md shadow-panel px-2.5 py-2 w-full whitespace-nowrap ${
+                    showBoroughColors
+                      ? "bg-brand border-brand text-brand-ink hover:bg-brand-hi hover:border-brand-hi"
+                      : "bg-ink-850/95 border-rule-soft text-paper-mid hover:bg-ink-800 hover:border-rule hover:text-paper"
+                  }`}
               onClick={() => {
                 setShowBoroughColors(!showBoroughColors);
               }}
@@ -880,118 +1271,132 @@ const Home = () => {
         </div>
       </div>
       {showInfo ? (
-        <div className="absolute opacity-100 left-0 right-0 mx-auto about-container">
-          <div class="lg:text-sm text-xs bg-white pb-16  md:px-8 px-4 rounded-md">
-            <div class="lg:text-lg text-sm mb-1">
-              <b>How does Proximity work?</b>
+        <div className="absolute z-30 opacity-100 left-0 right-0 mx-auto about-container">
+          <div
+            className="px-scroll max-h-[80vh] overflow-y-auto bg-ink-900/97 backdrop-blur-md
+              border border-rule-soft rounded-xl shadow-panel
+              pt-8 pb-12 md:px-10 px-5"
+          >
+            {/* The container is 80vw; the reference centers its body copy in a
+                fixed measure rather than letting it run the full width. */}
+            <div className="px-stagger max-w-[78ch] mx-auto">
+              <div className="text-headmd text-paper mb-3 animate-px-reveal">
+                <b className="font-medium">How does Proximity work?</b>
+              </div>
+              <div className="text-bodymd text-paper-mid max-w-[62ch] animate-px-reveal">
+                Proximity helps you discover neighborhoods in New York
+                City, based on your preferences.
+              </div>
+              <ul
+                className="px-stagger animate-px-reveal list-decimal ml-5 mt-4 text-bodymd text-paper-mid marker:text-paper-lav marker:font-mono max-w-[70ch]"
+              >
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Adding Filters</b>: From the left sidebar, add filters to
+                  narrow down your search.
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">View Map</b>: The map is interactive and will update as you
+                  add filters. Darker areas are the better matches for your
+                  preferences.
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">See Boroughs</b>: On the bottom right, toggle "Show
+                  Borough Colors" to color-coordinate the map by each
+                  neighborhood's borough.
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Find Apartments</b>: Click on a neighborhood to see apartment listings in that area.
+                </li>
+              </ul>
+
+              <div className="border-t border-rule-soft mt-9 mb-6" />
+
+              <div className="text-headmd text-paper mb-3 animate-px-reveal">
+                <b className="font-medium">Where is the data from?</b>
+              </div>
+              <div className="text-bodymd text-paper-mid max-w-[62ch] animate-px-reveal">
+                The data is sourced from several public datasets, with
+                additional processing to aggregate the disparate datasets into a
+                convenient and accessible format.
+              </div>
+              <ul
+                className="px-stagger animate-px-reveal ml-5 mt-4 list-disc text-bodymd text-paper-mid marker:text-paper-lav max-w-[70ch]"
+              >
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Neighborhoods and Boroughs</b>: 2020 Neighborhood
+                  Tabulation Areas (NTA),{" "}
+                  <a
+                    href="https://data.cityofnewyork.us"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-interactive text-brand hover:text-brand-hi underline underline-offset-2 decoration-brand/40 hover:decoration-brand-hi"
+                  >
+                    NYC Open Data
+                  </a>
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Grocery Chains</b>: Trader Joe's and Whole Foods store
+                  locator listings
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Parks</b>:{" "}
+                  <a
+                    href="https://data.cityofnewyork.us"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-interactive text-brand hover:text-brand-hi underline underline-offset-2 decoration-brand/40 hover:decoration-brand-hi"
+                  >
+                    NYC Open Data
+                  </a>{" "}
+                  (NYC Parks Properties)
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">BikeShare</b>:{" "}
+                  <a
+                    href="https://citibikenyc.com/system-data"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-interactive text-brand hover:text-brand-hi underline underline-offset-2 decoration-brand/40 hover:decoration-brand-hi"
+                  >
+                    Citi Bike GBFS feed
+                  </a>
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Subway Stations &amp; Lines</b>:{" "}
+                  <a
+                    href="https://data.ny.gov"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-interactive text-brand hover:text-brand-hi underline underline-offset-2 decoration-brand/40 hover:decoration-brand-hi"
+                  >
+                    MTA Subway Stations and Subway Service Lines, Open Data NY
+                  </a>
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Safety</b>:{" "}
+                  <a
+                    href="https://data.cityofnewyork.us"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-interactive text-brand hover:text-brand-hi underline underline-offset-2 decoration-brand/40 hover:decoration-brand-hi"
+                  >
+                    NYPD Complaint Data, NYC Open Data
+                  </a>
+                </li>
+                <li className="mt-2.5 pl-1">
+                  <b className="text-paper font-medium">Housing Prices</b>:{" "}
+                  <a
+                    href="https://www.huduser.gov/portal/datasets/fmr/smallarea/index.html"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="px-interactive text-brand hover:text-brand-hi underline underline-offset-2 decoration-brand/40 hover:decoration-brand-hi"
+                  >
+                    HUD Small Area Fair Market Rents
+                  </a>{" "}
+                  (1BR, calculated by ZIP code)
+                </li>
+              </ul>
             </div>
-            Proximity helps you discover suitable neighborhoods in New York
-            City, based on your preferences -- including how close you want
-            to live to a university like NYU or Columbia.
-            <ul class="list-decimal ml-6 text-sm">
-              <li class="mt-1">
-                <b>Adding Filters</b>: From the left sidebar, add filters to
-                narrow down your search. You can also click on some filters to
-                fine-tune your preferences.
-              </li>
-              <li class="mt-1">
-                <b>View Map</b>: The map is interactive and will update as you
-                add filters. Darker areas are the better matches for your
-                preferences -- for example, the neighborhoods closest to your
-                chosen university or with the highest safety appear darkest.
-                You can hover over a neighborhood to see its name and borough.
-              </li>
-              <li class="mt-1">
-                <b>See Boroughs</b>: On the bottom right, toggle "Show
-                Borough Colors" to color-coordinate the map by each
-                neighborhood's borough.
-              </li>
-            </ul>
-            <div class="lg:text-lg mt-4 mb-1">
-              <b>Where do you get the data?</b>
-            </div>
-            We source our data from several public datasets, and apply
-            additional processing to aggregate the disparate datasets into a
-            convenient and accessible format.
-            <ul class="ml-6 list-disc">
-              <li class="mt-1">
-                <b>Neighborhoods and Boroughs</b>: 2020 Neighborhood
-                Tabulation Areas (NTA),{" "}
-                <a
-                  href="https://data.cityofnewyork.us"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-blue-500 underline"
-                >
-                  NYC Open Data
-                </a>
-              </li>
-              <li class="mt-1">
-                <b>University (NYU &amp; Columbia)</b>: campus locations geocoded
-                from each university's published addresses
-              </li>
-              <li class="mt-1">
-                <b>Grocery Chains</b>: Trader Joe's and Whole Foods store
-                locator listings
-              </li>
-              <li class="mt-1">
-                <b>Parks</b>:{" "}
-                <a
-                  href="https://data.cityofnewyork.us"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-blue-500 underline"
-                >
-                  NYC Open Data
-                </a>{" "}
-                (NYC Parks Properties)
-              </li>
-              <li class="mt-1">
-                <b>BikeShare</b>:{" "}
-                <a
-                  href="https://citibikenyc.com/system-data"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-blue-500 underline"
-                >
-                  Citi Bike GBFS feed
-                </a>
-              </li>
-              <li class="mt-1">
-                <b>Subway Stations &amp; Lines</b>:{" "}
-                <a
-                  href="https://data.ny.gov"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-blue-500 underline"
-                >
-                  MTA Subway Stations and Subway Service Lines, Open Data NY
-                </a>
-              </li>
-              <li class="mt-1">
-                <b>Safety</b>:{" "}
-                <a
-                  href="https://data.cityofnewyork.us"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-blue-500 underline"
-                >
-                  NYPD Complaint Data, NYC Open Data
-                </a>
-              </li>
-              <li class="mt-1">
-                <b>Housing Prices</b>:{" "}
-                <a
-                  href="https://www.huduser.gov/portal/datasets/fmr/smallarea/index.html"
-                  target="_blank"
-                  rel="noreferrer"
-                  class="text-blue-500 underline"
-                >
-                  HUD Small Area Fair Market Rents
-                </a>{" "}
-                (1BR, calculated by ZIP code)
-              </li>
-            </ul>
           </div>
         </div>
       ) : (
@@ -1000,221 +1405,6 @@ const Home = () => {
     </>
   );
 
-  function displayActiveFilters() {
-    return (
-      <div className="flex flex-col gap-2 bodyText">
-        {showUniversity ? (
-          <div
-            onClick={() => {
-              setShowUniversity(false);
-              setNyu(false);
-              setColumbia(false);
-            }}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-violet-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex flex-col duration-200 cursor-pointer`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 font-medium text-gray-800">
-                <FaUniversity className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-violet-500" />
-                University
-              </span>
-              <span className="text-gray-300 group-hover:text-gray-500">
-                &times;
-              </span>
-            </div>
-            <div className="grid grid-cols-2 lg:gap-2 gap-1 mt-1.5">
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setNyu(!nyu);
-                }}
-                className={`${
-                  nyu
-                    ? "bg-violet-600 border-violet-600 text-white"
-                    : "bg-white border-gray-300 text-gray-700"
-                } duration-150 text-center border rounded-lg xl:px-2 px-0.5 py-1 cursor-pointer bodyText2`}
-              >
-                NYU
-              </div>
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setColumbia(!columbia);
-                }}
-                className={`${
-                  columbia
-                    ? "bg-violet-600 border-violet-600 text-white"
-                    : "bg-white border-gray-300 text-gray-700"
-                } duration-150 text-center border rounded-lg xl:px-2 px-0.5 py-1 cursor-pointer bodyText2`}
-              >
-                Columbia
-              </div>
-            </div>
-          </div>
-        ) : (
-          <></>
-        )}
-        {showCrime ? (
-          <div
-            onClick={() => setShowCrime(false)}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-rose-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex items-center justify-between duration-200 cursor-pointer`}
-          >
-            <span className="flex items-center gap-1.5 font-medium text-gray-800">
-              <BsShield className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-rose-500" />
-              Safety
-            </span>
-            <span className="text-gray-300 group-hover:text-gray-500">
-              &times;
-            </span>
-          </div>
-        ) : (
-          <></>
-        )}
-        {showParks ? (
-          <div
-            onClick={() => setShowParks(false)}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-emerald-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex items-center justify-between duration-200 cursor-pointer`}
-          >
-            <span className="flex items-center gap-1.5 font-medium text-gray-800">
-              <BsTree className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-emerald-500" />
-              Parks
-            </span>
-            <span className="text-gray-300 group-hover:text-gray-500">
-              &times;
-            </span>
-          </div>
-        ) : (
-          <></>
-        )}
-        {showGrocery ? (
-          <div
-            onClick={() => {
-              setShowGrocery(false);
-              setWholeFoods(false);
-              setTraderJoes(false);
-            }}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-orange-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex flex-col duration-200 cursor-pointer`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 font-medium text-gray-800">
-                <FiShoppingCart className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-orange-500" />
-                Grocery Chains
-              </span>
-              <span className="text-gray-300 group-hover:text-gray-500">
-                &times;
-              </span>
-            </div>
-            <div className="grid grid-cols-2 lg:gap-2 gap-1 mt-1.5">
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setTraderJoes(!traderJoes);
-                }}
-                className={`${
-                  traderJoes
-                    ? "bg-orange-600 border-orange-600 text-white"
-                    : "bg-white border-gray-300 text-gray-700"
-                } duration-150 text-center border rounded-lg xl:px-2 px-0.5 py-1 cursor-pointer bodyText2`}
-              >
-                Trader Joe's
-              </div>
-              <div
-                onClick={(e) => {
-                  e.stopPropagation();
-                  e.preventDefault();
-                  setWholeFoods(!wholeFoods);
-                }}
-                className={`${
-                  wholeFoods
-                    ? "bg-orange-600 border-orange-600 text-white"
-                    : "bg-white border-gray-300 text-gray-700"
-                } duration-150 text-center border rounded-lg xl:px-2 px-0.5 py-1 cursor-pointer bodyText2`}
-              >
-                Whole Foods
-              </div>
-            </div>
-          </div>
-        ) : (
-          <></>
-        )}
-        {showSubway ? (
-          <div
-            onClick={() => setShowSubway(false)}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-blue-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex items-center justify-between duration-200 cursor-pointer`}
-          >
-            <span className="flex items-center gap-1.5 font-medium text-gray-800">
-              <BsTrainFront className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-blue-500" />
-              Subway Stations
-            </span>
-            <span className="text-gray-300 group-hover:text-gray-500">
-              &times;
-            </span>
-          </div>
-        ) : (
-          <></>
-        )}
-        {showBudget ? (
-          <div
-            onClick={() => setShowBudget(false)}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-amber-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex flex-col duration-200 cursor-pointer`}
-          >
-            <div className="flex items-center justify-between">
-              <span className="flex items-center gap-1.5 font-medium text-gray-800">
-                <BiMoneyWithdraw className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-amber-500" />
-                Budget
-              </span>
-              <span className="text-gray-300 group-hover:text-gray-500">
-                &times;
-              </span>
-            </div>
-            <div
-              onClick={(e) => {
-                e.stopPropagation();
-              }}
-              className={`bodyText2 mt-1.5`}
-            >
-              <div class="slidecontainer">
-                <p>Max Monthly Rent (1BR):</p>
-                <input
-                  onChange={(e) => {
-                    setBudgetMax(parseInt(e.target.value));
-                  }}
-                  type="range"
-                  min="2000"
-                  max="4000"
-                  step="50"
-                  value={budgetMax}
-                  class="slider"
-                  id="myRange"
-                />
-                <div className="flex flex-col py-2 px-2 bg-amber-50 rounded-lg w-full mx-auto border border-amber-200">
-                  <p className="">Max 1BR Rent: </p>
-                  <span className="font-semibold">${budgetMax}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <></>
-        )}
-        {showBikeshare ? (
-          <div
-            onClick={() => setShowBikeshare(false)}
-            className={`group rounded-xl border border-gray-200 border-l-4 border-l-slate-500 bg-white hover:bg-gray-50 hover:shadow-sm w-full p-2 flex items-center justify-between duration-200 cursor-pointer`}
-          >
-            <span className="flex items-center gap-1.5 font-medium text-gray-800">
-              <PiPersonSimpleBikeBold className="xl:w-4 xl:h-4 w-2.5 h-2.5 text-slate-500" />
-              BikeShare
-            </span>
-            <span className="text-gray-300 group-hover:text-gray-500">
-              &times;
-            </span>
-          </div>
-        ) : (
-          <></>
-        )}
-      </div>
-    );
-  }
 };
 
 export default Home;

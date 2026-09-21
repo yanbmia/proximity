@@ -2,7 +2,7 @@
   "name": "proximity",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://yanbmia.github.io/proximity-app",
+  "homepage": "https://yanbmia.github.io/proximity",
   "dependencies": {
     "@emailjs/browser": "^3.10.0",
     "@fortawesome/fontawesome-svg-core": "^6.3.0",

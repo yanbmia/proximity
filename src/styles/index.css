@@ -2,8 +2,271 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ==========================================================================
+   PROXIMITY -- design tokens + motion primitives
+   Modeled on modernedge.io. Easing curves and the neutral/accent hexes are
+   measured from that site's live computed styles; see tailwind.config.js for
+   which values are measured vs. interpolated.
+   ========================================================================== */
+
+:root {
+  /* Motion -- both curves lifted verbatim from the reference's Framer
+     appear-animation config. */
+  --px-ease-brand: cubic-bezier(0.44, 0, 0.56, 1);
+  --px-ease-rise:  cubic-bezier(0.12, 0.23, 0.5, 1);
+  --px-dur-hover:  240ms;
+  --px-dur-panel:  380ms;
+  --px-dur-reveal: 640ms;
+  --px-stagger:     70ms;
+
+  /* Surfaces */
+  --px-ink-950: #141416;
+  --px-ink-900: #19191c;
+  --px-ink-850: #1c1b1e;
+  --px-ink-800: #232327;
+  --px-ink-750: #2a292e;
+
+  /* Lines + text */
+  --px-rule:      #464648;
+  --px-rule-soft: #2e2d31;
+  --px-paper:     #f1f1f1;
+  --px-paper-mid: #bebabf;
+  --px-paper-low: #8a858c;
+
+  /* Accent */
+  --px-brand:      #8130fa;
+  --px-brand-ink:  #0b0b0d;
+  --px-brand-wash: rgba(129, 48, 250, 0.14);
+
+  /* Spacing rhythm. The reference runs 20/30/40/50/70/80; scaled to a
+     dense panel while keeping the same interval feel. */
+  --px-space-1: 4px;
+  --px-space-2: 8px;
+  --px-space-3: 10px;
+  --px-space-4: 14px;
+  --px-space-5: 20px;
+  --px-space-6: 30px;
+  --px-space-7: 40px;
+}
+
+html, body, #root {
+  background-color: var(--px-ink-900);
+}
+
+body {
+  font-family: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  color: var(--px-paper);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* --------------------------------------------------------------------------
+   MOUNT REVEAL
+   The reference fades content up with opacity 0 -> 1 and y 20px -> 0 on a
+   ~1s tween as sections scroll into view. This app never scrolls (it's one
+   fixed viewport), so there's nothing to observe -- the equivalent moment is
+   simply "when this row first exists in the DOM": sidebar rows on first
+   mount, modal rows each time the modal opens.
+   
+   This used to be driven by an IntersectionObserver adding an "is-revealed"
+   class via classList, outside of React. That broke the instant a row was
+   clicked: every filter row's own className already depends on its own
+   toggle state (for the active/inactive coloring), so a click makes React
+   recompute and overwrite that row's whole class attribute. React has no
+   idea "is-revealed" was ever there, so it silently dropped it, and the row
+   snapped back to "opacity: 0" -- forever, since the observer had already
+   stopped watching it.
+   
+   animate-px-reveal fixes that by not mutating anything outside of React:
+   it's a plain CSS animation, applied as a static token that's baked
+   directly into each element's own className template (see Home.js), so
+   it's part of the exact same string React diffs on every render. There's
+   nothing left for a re-render to accidentally drop. animation-fill-mode:
+   both plays it once on creation and holds the end state; it does not
+   restart on unrelated re-renders because the class token itself never
+   leaves the className string.
+   -------------------------------------------------------------------------- */
+
+/* Tailwind's config (tailwind.config.js) generates the .animate-px-reveal
+   utility itself (animation: px-reveal 640ms ... both) along with its
+   @keyframes -- this just layers the per-row stagger delay on top, since
+   that has to come from a CSS custom property, not a static utility. */
+.animate-px-reveal {
+  animation-delay: var(--px-reveal-delay, 0ms);
+}
+
+/* Staggered entry, matching the reference's sequenced hero. It orchestrates
+   with 200ms gaps between groups; 70ms is used here so seven filter rows
+   settle in about half a second instead of a second and a half. */
+.px-stagger > *:nth-child(1)  { --px-reveal-delay: 0ms; }
+.px-stagger > *:nth-child(2)  { --px-reveal-delay: 70ms; }
+.px-stagger > *:nth-child(3)  { --px-reveal-delay: 140ms; }
+.px-stagger > *:nth-child(4)  { --px-reveal-delay: 210ms; }
+.px-stagger > *:nth-child(5)  { --px-reveal-delay: 280ms; }
+.px-stagger > *:nth-child(6)  { --px-reveal-delay: 350ms; }
+.px-stagger > *:nth-child(7)  { --px-reveal-delay: 420ms; }
+.px-stagger > *:nth-child(8)  { --px-reveal-delay: 490ms; }
+.px-stagger > *:nth-child(9)  { --px-reveal-delay: 560ms; }
+.px-stagger > *:nth-child(10) { --px-reveal-delay: 630ms; }
+.px-stagger > *:nth-child(n+11) { --px-reveal-delay: 700ms; }
+
+/* Sub-panels (university / grocery / budget) opening inside a filter row. */
+.px-panel-in {
+  animation: px-panel-in var(--px-dur-panel) var(--px-ease-brand) both;
+}
+
+@keyframes px-panel-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-px-reveal {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+  .px-panel-in { animation: none; }
+}
+
+/* --------------------------------------------------------------------------
+   INTERACTION
+   The reference transitions everything on hover with a short tween. Focus
+   rings are this app's own addition -- the reference has no visible focus
+   treatment, and a keyboard user needs one.
+   -------------------------------------------------------------------------- */
+
+.px-interactive {
+  transition:
+    background-color var(--px-dur-hover) var(--px-ease-brand),
+    border-color     var(--px-dur-hover) var(--px-ease-brand),
+    color            var(--px-dur-hover) var(--px-ease-brand),
+    box-shadow       var(--px-dur-hover) var(--px-ease-brand),
+    transform        var(--px-dur-hover) var(--px-ease-brand);
+}
+
+.px-focus:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--px-ink-900),
+    0 0 0 3px var(--px-brand);
+}
+
+/* Uppercase mono label -- the reference's signature small-type treatment. */
+.px-label {
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 500;
+}
+
+/* The small purple square that precedes every eyebrow label on the
+   reference site. */
+.px-eyebrow-dot::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 8px;
+  vertical-align: 1px;
+  background-color: var(--px-brand);
+}
+
+/* Hairline divider, the reference's separation device of choice. */
+.px-rule {
+  border-color: var(--px-rule-soft);
+}
+
+/* --------------------------------------------------------------------------
+   SCROLLBARS inside dark panels
+   -------------------------------------------------------------------------- */
+
+.px-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--px-rule) transparent;
+}
+.px-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+.px-scroll::-webkit-scrollbar-track { background: transparent; }
+.px-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--px-rule-soft);
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.px-scroll:hover::-webkit-scrollbar-thumb { background-color: var(--px-rule); }
+
+/* --------------------------------------------------------------------------
+   MAPLIBRE chrome, retuned for the dark theme
+   -------------------------------------------------------------------------- */
+
 .maplibregl-popup{
   z-index:1000;
+}
+
+/* Station click popups. MapLibre ships a white bubble with a white tip;
+   both are retuned to the panel surface so they match the sidebar. */
+.maplibregl-popup-content {
+  background: rgba(28, 27, 30, 0.97);
+  color: var(--px-paper);
+  border: 1px solid var(--px-rule);
+  border-radius: 3px;
+  padding: 12px 14px;
+  box-shadow: 0 8px 28px rgba(15, 15, 17, 0.65);
+  backdrop-filter: blur(6px);
+}
+
+.maplibregl-popup-anchor-top .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-top-right .maplibregl-popup-tip {
+  border-bottom-color: rgba(28, 27, 30, 0.97);
+}
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-left .maplibregl-popup-tip,
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip {
+  border-top-color: rgba(28, 27, 30, 0.97);
+}
+.maplibregl-popup-anchor-left .maplibregl-popup-tip {
+  border-right-color: rgba(28, 27, 30, 0.97);
+}
+.maplibregl-popup-anchor-right .maplibregl-popup-tip {
+  border-left-color: rgba(28, 27, 30, 0.97);
+}
+
+.maplibregl-popup-close-button {
+  color: var(--px-paper-low);
+  font-size: 16px;
+  padding: 2px 7px 4px;
+  border-radius: 2px;
+  transition: color var(--px-dur-hover) var(--px-ease-brand),
+              background-color var(--px-dur-hover) var(--px-ease-brand);
+}
+.maplibregl-popup-close-button:hover {
+  color: var(--px-brand-ink);
+  background-color: var(--px-brand);
+}
+
+/* Attribution bar -- the default white pill glares against a dark basemap. */
+.maplibregl-ctrl-attrib.maplibregl-compact,
+.maplibregl-ctrl-attrib {
+  background: rgba(20, 20, 22, 0.78) !important;
+  border-radius: 2px;
+  backdrop-filter: blur(4px);
+}
+.maplibregl-ctrl-attrib,
+.maplibregl-ctrl-attrib a {
+  color: var(--px-paper-low) !important;
+  font-family: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+}
+.maplibregl-ctrl-attrib a:hover { color: var(--px-paper-mid) !important; }
+.maplibregl-ctrl-attrib-button {
+  background-color: rgba(241, 241, 241, 0.55) !important;
+  border-radius: 2px;
+}
+
+/* The map canvas itself, so there is no white flash before tiles arrive. */
+.maplibregl-map, .maplibregl-canvas-container, .maplibregl-canvas {
+  background-color: var(--px-ink-950);
 }
 
 @layer components{

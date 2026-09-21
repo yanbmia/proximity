@@ -5,7 +5,7 @@ const App = () => {
     return (
         <Routes>
           <Route path="*" element={
-            <div className="bg-black">
+            <div className="bg-ink-900">
               <Home />
             </div>
           } />
